@@ -129,7 +129,7 @@ class PointsSegment:
         self.char_end = char_end
         self.state = self._define_state()
         self.fids = []
-        self.names = {}  # FID, new-name
+        self.names = {}  # FID: new-name
 
     def __str__(self):
         return (f'PointsSegment(start=[{self.start}, {self.char_start}], end=[{self.end}, {self.char_end}],'
@@ -231,7 +231,7 @@ def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field
         :param points:
         :return:
         """
-        breakpoints_dict: dict[int, str] = {}  # index_of_point, old_name
+        breakpoints_dict: dict[int, str] = {}  # index_of_point: old_name
         for index, point in enumerate(points):
             try:
                 old_num = point[field_name]
@@ -295,7 +295,7 @@ def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field
 
 def create_new_names(base_dict: dict[int, str], list_of_segments: list[PointsSegment]) -> dict[int, str]:
     """
-    For each segment, update dict  for storing new names.
+    For each segment, update dict for storing new names.
     :param base_dict: dictionary mapping FID with new name, waiting for update
     :param list_of_segments:
     :return:
