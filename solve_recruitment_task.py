@@ -1,4 +1,12 @@
-# AUTHOR Adam Gruca
+"""
+Script solving the recruitment task for EnviroSolutions Sp z o. o.
+AUTHOR Adam Gruca (https://github.com/Trexerx/)  (C) 2025
+
+Requirements:
+    - Python 3.12 from Qgis distribution.
+    This script was created using python 3.12 from Qgis 3.44.2 from OSGeo4W installer,
+    but should work for any Qgis version with python 3.10+
+"""
 
 import settings as sett
 
@@ -21,7 +29,7 @@ def create_results_file(old_filename: str | Path, new_filename: str | Path):
 
 def open_spatial_layer(filename: str | Path, layer_name: str) -> QgsVectorLayer:
     """
-    Opens specified layer from geospatial file
+    Opens specified layer from geospatial file.
     :param filename:
     :param layer_name:
     :return:
@@ -34,7 +42,7 @@ def open_spatial_layer(filename: str | Path, layer_name: str) -> QgsVectorLayer:
 
 def prepare_new_values_dict(layer: QgsVectorLayer, old_name_field: str) -> dict[int, str]:
     """
-    Maps old numbers to FIDs, no number -> 'NULL' value
+    Maps old names to FIDs, no name -> 'NULL' value.
     :param layer:
     :param old_name_field:
     :return:
@@ -49,7 +57,7 @@ def prepare_new_values_dict(layer: QgsVectorLayer, old_name_field: str) -> dict[
 
 def merge_lines_by_field_value(layer: QgsVectorLayer, field_name: str) -> dict[str, QgsGeometry]:
     """
-    Returns lines as QgsGeometry merged by unique field values
+    Returns lines as QgsGeometry merged by unique field values.
     :param layer:
     :param field_name:
     :return:
@@ -121,7 +129,7 @@ class PointsSegment:
         self.char_end = char_end
         self.state = self._define_state()
         self.fids = []
-        self.names = {}  # FID, new-number
+        self.names = {}  # FID, new-name
 
     def __str__(self):
         return (f'PointsSegment(start=[{self.start}, {self.char_start}], end=[{self.end}, {self.char_end}],'
@@ -174,19 +182,19 @@ class PointsSegment:
 
     def _naming_one(self):
         """
-        New names based on state 1-no starting old name, no ending old name
+        New names based on state 1-no starting old name, no ending old name.
         """
         self.names = {fid: f'{num+1}P' for num, fid in enumerate(self.fids)}
 
     def _naming_two(self):
         """
-        New names based on state 2-no starting old name, ending old name exists
+        New names based on state 2-no starting old name, ending old name exists.
         """
         self.names = {fid: f'{num+1}Pnowy' for num, fid in enumerate(self.fids)}
 
     def _naming_three(self):
         """
-        New names based on state 3-starting old name exists, ending old name exists
+        New names based on state 3-starting old name exists, ending old name exists.
         """
 
         def _next_letter():
@@ -209,7 +217,7 @@ class PointsSegment:
 
     def _naming_four(self):
         """
-        New names based on state 4-starting old name exists, no ending old name
+        New names based on state 4-starting old name exists, no ending old name.
         :return:
         """
         start_number = int(self.char_start[:-1])
@@ -219,11 +227,11 @@ class PointsSegment:
 def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field_name: str):
     def calc_breakpoints(points: list[QgsFeature]) -> dict[int, str]:
         """
-        If old number exists, get index of that point as a breakpoint
+        If old name exists, get index of that point as a breakpoint.
         :param points:
         :return:
         """
-        breakpoints_dict: dict[int, str] = {}  # index_of_point, old_number
+        breakpoints_dict: dict[int, str] = {}  # index_of_point, old_name
         for index, point in enumerate(points):
             try:
                 old_num = point[field_name]
@@ -311,10 +319,19 @@ def assign_new_names(point_layer: QgsVectorLayer, fids_with_new_names: dict[int,
 
     field_index = point_layer.fields().indexOf(new_name_field)
     change_dict = {fid: {field_index: new_name} for fid, new_name in fids_with_new_names.items()}
+
+    """
+    Because GDAL is trying to read metadata of whole .gpkg file during changeAttributeValues(), it often results
+    in an 'failed: unable to open database file' error. It have no influence on the proper work of this script, so
+    printing is disabled for a brief moment of changing data. 
+    """
+    from osgeo.gdal import PushErrorHandler, PopErrorHandler
+    PushErrorHandler('CPLQuietErrorHandler')
     point_layer.dataProvider().changeAttributeValues(change_dict)
+    PopErrorHandler()
 
 
-# ============================================================================================================ MAIN ===
+# =====***=====***=====***=====***=====***=====***=====***=====***=====***=====***=====***=====***=====*** MAIN =====***
 def solve_recruitment_task():
     """
     Assign new names to points while meeting specific conditions.
@@ -322,7 +339,7 @@ def solve_recruitment_task():
     """
 
     """
-    In order to preserve original spatial data, the script creates a copy to work on
+    In order to preserve original spatial data, the script creates a copy to work on.
     """
     create_results_file(sett.DATA_FILENAME, sett.RESULTS_FILENAME)
 
@@ -339,11 +356,12 @@ def solve_recruitment_task():
     """
     lines = open_spatial_layer(sett.RESULTS_FILENAME, sett.LINE_LAYER_NAME)
     lines_by_name = merge_lines_by_field_value(lines, sett.LINE_IDENTIFICATION_FIELD)  # line_name: QgsGeometry_obj
+    del lines
 
     """
     Each watercourse gets a list of points it is intersecting with.
     Points are sorted by the distance along the line from the starting point.
-    Then, they are further segmented by breakpoints - points with old numbers.
+    Then, they are further segmented by breakpoints - points with old names.
     
     The intersection is realised by checking the distance between line and point, with 1e-6 threshold.
     QgsGeometry.intersects() method gives unrealistic results due to float point rounding error.
@@ -356,6 +374,7 @@ def solve_recruitment_task():
     """
     new_names_dict = create_new_names(new_names_dict, segmented_points)
     assign_new_names(points, new_names_dict, sett.POINT_NEW_NAME_FIELD)
+    del points
 
 
 if __name__ == '__main__':
