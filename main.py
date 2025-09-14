@@ -5,6 +5,7 @@ import settings as sett
 from qgis.core import QgsVectorLayer, QgsGeometry, QgsWkbTypes, QgsFeature
 from pathlib import Path
 from shutil import copy2
+from string import ascii_lowercase
 
 
 def create_results_file(old_filename: str | Path, new_filename: str | Path):
@@ -44,7 +45,7 @@ def open_spatial_layer(filename: str | Path, layer_name: str) -> QgsVectorLayer:
 #     return unique_values
 
 
-def prepare_new_values_dict(layer: QgsVectorLayer, old_name_field: str) -> dict:
+def prepare_new_values_dict(layer: QgsVectorLayer, old_name_field: str) -> dict[int, str]:
     """
     Maps old numbers to FIDs, no number -> 'NULL' value
     :param layer:
@@ -127,14 +128,106 @@ def points_by_watercourse(points_layer: QgsVectorLayer, lines: dict[str, QgsGeom
 
 class PointsSegment:
     def __init__(self, start: int, end: int, char_start: str, char_end: str):
-        self.start= start
+        self.start = start
         self.end = end
         self.char_start = char_start
         self.char_end = char_end
+        self.state = self._define_state()
         self.fids = []
+        self.names = {}  # FID, new-number
+
+    def __str__(self):
+        return (f'PointsSegment(start=[{self.start}, {self.char_start}], end=[{self.end}, {self.char_end}],'
+                f' count={len(self.fids)})')
 
     def populate(self, points: list[QgsFeature]):
+        """
+        Adds points` FIDs basing on start-end range.
+        :param points:
+        :return:
+        """
         self.fids = [f.id() for f in points[self.start: self.end]]
+
+    def _define_state(self) -> int:
+        """
+        1-no starting old name, no ending old name;
+        2-no starting old name, ending old name exists;
+        3-starting old name exists, ending old name exists;
+        4-starting old name exists, no ending old name;
+        :return:
+        """
+        if not self.char_start:
+            if not self.char_end:
+                return 1
+            else:
+                return 2
+        else:
+            if self.char_end:
+                return 3
+            else:
+                return 4
+
+    def create_new_names(self):
+        """
+        New names based on state.
+        """
+        if not self.fids:
+            return
+        match self.state:
+            case 1:
+                self._naming_one()
+            case 2:
+                self._naming_two()
+            case 3:
+                self._naming_three()
+            case 4:
+                self._naming_four()
+            case _:
+                return
+
+    def _naming_one(self):
+        """
+        New names based on state 1-no starting old name, no ending old name
+        """
+        self.names = {fid: f'{num+1}P' for num, fid in enumerate(self.fids)}
+
+    def _naming_two(self):
+        """
+        New names based on state 2-no starting old name, ending old name exists
+        """
+        self.names = {fid: f'{num+1}Pnowy' for num, fid in enumerate(self.fids)}
+
+    def _naming_three(self):
+        """
+        New names based on state 3-starting old name exists, ending old name exists
+        """
+
+        def _next_letter():
+            """
+            Next letter of alphabet generator, if called more times than letters it yields 'aa', 'ab' ... etc.
+            """
+            letters = ascii_lowercase
+            n = 1
+            while True:
+                num = n
+                result = ""
+                while num > 0:
+                    num, remainder = divmod(num - 1, 26)
+                    result = letters[remainder] + result
+                yield result
+                n += 1
+
+        letter = _next_letter()
+        self.names = {fid: f'{self.char_start}{next(letter)}' for fid in self.fids}
+
+    def _naming_four(self):
+        """
+        New names based on state 4-starting old name exists, no ending old name
+        :return:
+        """
+        start_number = int(self.char_start[:-1])
+        self.names = {fid: f'{start_number+num+1}P' for num, fid in enumerate(self.fids)}
+
 
 
 
@@ -156,24 +249,24 @@ def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field
                 breakpoints_dict[index] = old_num
         return breakpoints_dict
 
-    def calc_intervals(breakpoints_dict: dict[int, str], points: list[QgsFeature]):
+    def calc_intervals(breakpoints_dict: dict[int, str], points_on_tle_line: list[QgsFeature]):
         """
         If any breakpoint exists, segment points by breakpoints.
         :param breakpoints_dict:
-        :param points:
+        :param points_on_tle_line:
         :return:
         """
         indexes = sorted(breakpoints_dict.keys())
         segments = [[indexes[i] + 1, indexes[i + 1]] for i in range(len(indexes) - 1)]
 
         if indexes[0] == 0 and not segments:
-            segments.append([1, len(points) + 1])
+            segments.append([1, len(points_on_tle_line) + 1])
         if indexes[0] != 0 and not segments:
             segments.append([0, indexes[0]])
-        if segments[-1][1] < len(points) - 1:
-            segments.append([segments[-1][1] + 1, len(points) + 1])
+        if segments[-1][1] < len(points_on_tle_line) - 1:
+            segments.append([segments[-1][1] + 1, len(points_on_tle_line) + 1])
         if segments[0][0] not in [0, 1]:
-            segments.append([0, segments[0][0]])
+            segments.append([0, segments[0][0]-1])
 
         return segments
 
@@ -190,13 +283,37 @@ def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field
             segments_by_breakpoints = calc_intervals(breakpoints, sorted_points)
 
         for segment in segments_by_breakpoints:
-            start_char = breakpoints.get(segment[0], '')
-            end_char = breakpoints.get(segment[1], '')
+            if segment[0] == 0:
+                start_char = ''
+            else:
+                start_char = breakpoints.get(segment[0]-1, '')
+            if segment[1] > len(sorted_points):
+                end_char = ''
+            else:
+                end_char = breakpoints.get(segment[1], '')
+
+
             segmented_points = PointsSegment(start=segment[0], end=segment[1],
                                                   char_start=start_char, char_end=end_char)
             segmented_points.populate(sorted_points)
+
             list_of_segments.append(segmented_points)
     return list_of_segments
+
+
+def create_new_names(base_dict: dict[int, str], list_of_segments: list[PointsSegment]) -> dict[int, str]:
+    """
+    For each segment, update dict  for storing new names.
+    :param base_dict:
+    :param list_of_segments:
+    :return:
+    """
+    for segment in list_of_segments:
+        segment.create_new_names()
+        base_dict.update(segment.names)
+
+    return base_dict
+
 
 # ============================================================================================================ MAIN ===
 def main():
@@ -226,6 +343,7 @@ def main():
     """
     Each watercourse gets a list of points it is intersecting with.
     Points are sorted by the distance along the line from the starting point.
+    Then, they are further segmented by breakpoints - points with old numbers.
     
     The intersection is realised by checking the distance between line and point, with 1e-6 threshold.
     QgsGeometry.intersects() method gives unrealistic results due to float point rounding error.
@@ -233,6 +351,12 @@ def main():
 
     sorted_points = points_by_watercourse(points, lines_by_name)
     segmented_points = segment_points_by_old_num(sorted_points, sett.POINT_OLD_NAME_FIELD)
+
+    """
+    New names are being created.
+    """
+    new_names_dict = create_new_names(new_names_dict, segmented_points)
+
 
 
 if __name__ == '__main__':
