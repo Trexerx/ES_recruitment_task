@@ -1,7 +1,8 @@
 # AUTHOR Adam Gruca
 
 import settings as sett
-from qgis.core import QgsVectorLayer, QgsGeometry, QgsWkbTypes
+
+from qgis.core import QgsVectorLayer, QgsGeometry, QgsWkbTypes, QgsFeature
 from pathlib import Path
 from shutil import copy2
 
@@ -86,18 +87,18 @@ def merge_lines_by_field_value(layer: QgsVectorLayer, field_name: str) -> dict[s
     return lines
 
 
-def intersecting_points_sorted_by_direction(point_layer: QgsVectorLayer, line: QgsGeometry) -> list[QgsGeometry]:
+def intersecting_points_sorted_by_direction(points_layer: QgsVectorLayer, line: QgsGeometry) -> list[QgsFeature]:
     """
     Searches for points intersecting with given line, and sorts them by distance from line start.
-    :param point_layer:
+    :param points_layer:
     :param line:
     :return:
     """
     assert QgsWkbTypes.geometryType(line.wkbType()) == QgsWkbTypes.LineGeometry, f'Line is not LineGeometry'
-    assert point_layer.geometryType() == QgsWkbTypes.PointGeometry, f'Points layer is not PointsGeometry'
+    assert points_layer.geometryType() == QgsWkbTypes.PointGeometry, f'Points layer is not PointsGeometry'
 
     intersecting_points = {}  # {distance_along_line: point_object}
-    for point in point_layer.getFeatures():
+    for point in points_layer.getFeatures():
         if line.distance(point.geometry()) < 1e-6:
             intersecting_points[line.lineLocatePoint(point.geometry())] = point
 
@@ -106,6 +107,96 @@ def intersecting_points_sorted_by_direction(point_layer: QgsVectorLayer, line: Q
 
     return sorted_intersecting_points
 
+
+def points_by_watercourse(points_layer: QgsVectorLayer, lines: dict[str, QgsGeometry]) -> dict[str, list[QgsFeature]]:
+    """
+    Intersects points by watercourse and sorts them by distance from the line starting point.
+    :param points_layer:
+    :param lines:
+    :return:
+    """
+    assert points_layer.geometryType() == QgsWkbTypes.PointGeometry, f'Points layer is not PointsGeometry'
+
+    sorted_points_by_watercourse = {}  # water_name: list_of_points_sorted_by_distance
+    for name, line in lines.items():
+        sorted_p = intersecting_points_sorted_by_direction(points_layer, line)
+        sorted_points_by_watercourse[name] = sorted_p
+
+    return sorted_points_by_watercourse
+
+
+class PointsSegment:
+    def __init__(self, start: int, end: int, char_start: str, char_end: str):
+        self.start= start
+        self.end = end
+        self.char_start = char_start
+        self.char_end = char_end
+        self.fids = []
+
+    def populate(self, points: list[QgsFeature]):
+        self.fids = [f.id() for f in points[self.start: self.end]]
+
+
+
+def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field_name: str):
+    def calc_breakpoints(points: list[QgsFeature]) -> dict[int, str]:
+        """
+        If old number exists, get index of that point as a breakpoint
+        :param points:
+        :return:
+        """
+        breakpoints_dict: dict[int, str] = {}  # index_of_point, old_number
+        for index, point in enumerate(points):
+            try:
+                old_num = point[field_name]
+            except KeyError:
+                print(f'Point don`t have field named "{field_name}"')
+                exit()
+            if old_num:
+                breakpoints_dict[index] = old_num
+        return breakpoints_dict
+
+    def calc_intervals(breakpoints_dict: dict[int, str], points: list[QgsFeature]):
+        """
+        If any breakpoint exists, segment points by breakpoints.
+        :param breakpoints_dict:
+        :param points:
+        :return:
+        """
+        indexes = sorted(breakpoints_dict.keys())
+        segments = [[indexes[i] + 1, indexes[i + 1]] for i in range(len(indexes) - 1)]
+
+        if indexes[0] == 0 and not segments:
+            segments.append([1, len(points) + 1])
+        if indexes[0] != 0 and not segments:
+            segments.append([0, indexes[0]])
+        if segments[-1][1] < len(points) - 1:
+            segments.append([segments[-1][1] + 1, len(points) + 1])
+        if segments[0][0] not in [0, 1]:
+            segments.append([0, segments[0][0]])
+
+        return segments
+
+    # Main body of function, after subfunctions definition.
+    list_of_segments: list[PointsSegment] = []
+    for name, sorted_points in dict_of_points.items():
+        if not sorted_points:
+            continue
+
+        breakpoints = calc_breakpoints(sorted_points)
+        if not breakpoints:
+            segments_by_breakpoints = [[0, len(sorted_points) + 1]]
+        else:
+            segments_by_breakpoints = calc_intervals(breakpoints, sorted_points)
+
+        for segment in segments_by_breakpoints:
+            start_char = breakpoints.get(segment[0], '')
+            end_char = breakpoints.get(segment[1], '')
+            segmented_points = PointsSegment(start=segment[0], end=segment[1],
+                                                  char_start=start_char, char_end=end_char)
+            segmented_points.populate(sorted_points)
+            list_of_segments.append(segmented_points)
+    return list_of_segments
 
 # ============================================================================================================ MAIN ===
 def main():
@@ -139,10 +230,9 @@ def main():
     The intersection is realised by checking the distance between line and point, with 1e-6 threshold.
     QgsGeometry.intersects() method gives unrealistic results due to float point rounding error.
     """
-    sorted_points = {}  # water_name: list_of_points_sorted_by_distance
-    for name, line in lines_by_name.items():
-        sorted_p = intersecting_points_sorted_by_direction(points, line)
-        sorted_points[name] = sorted_p
+
+    sorted_points = points_by_watercourse(points, lines_by_name)
+    segmented_points = segment_points_by_old_num(sorted_points, sett.POINT_OLD_NAME_FIELD)
 
 
 if __name__ == '__main__':
