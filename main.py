@@ -31,19 +31,6 @@ def open_spatial_layer(filename: str | Path, layer_name: str) -> QgsVectorLayer:
     assert opened_layer.isValid(), f"Cannot properly load layer {layer_name} from {filename}"
     return opened_layer
 
-# NOT USED FOR NOW, MAY BE DELETED IN LATER COMMITS
-# def unique_values_from_field(layer: QgsVectorLayer, field_name: str):
-#     """
-#     Returns unique values of a field as a set.
-#     :param layer:
-#     :param field_name:
-#     :return:
-#     """
-#     assert field_name in [f.name() for f in layer.fields()], f'No field named "{field_name}" in layer'
-#     idx = layer.fields().indexOf(field_name)
-#     unique_values = layer.uniqueValues(idx)
-#     return unique_values
-
 
 def prepare_new_values_dict(layer: QgsVectorLayer, old_name_field: str) -> dict[int, str]:
     """
@@ -118,7 +105,7 @@ def points_by_watercourse(points_layer: QgsVectorLayer, lines: dict[str, QgsGeom
     """
     assert points_layer.geometryType() == QgsWkbTypes.PointGeometry, f'Points layer is not PointsGeometry'
 
-    sorted_points_by_watercourse = {}  # water_name: list_of_points_sorted_by_distance
+    sorted_points_by_watercourse = {}  # line_name: list_of_points_sorted_by_distance
     for name, line in lines.items():
         sorted_p = intersecting_points_sorted_by_direction(points_layer, line)
         sorted_points_by_watercourse[name] = sorted_p
@@ -229,8 +216,6 @@ class PointsSegment:
         self.names = {fid: f'{start_number+num+1}P' for num, fid in enumerate(self.fids)}
 
 
-
-
 def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field_name: str):
     def calc_breakpoints(points: list[QgsFeature]) -> dict[int, str]:
         """
@@ -292,9 +277,8 @@ def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field
             else:
                 end_char = breakpoints.get(segment[1], '')
 
-
             segmented_points = PointsSegment(start=segment[0], end=segment[1],
-                                                  char_start=start_char, char_end=end_char)
+                                             char_start=start_char, char_end=end_char)
             segmented_points.populate(sorted_points)
 
             list_of_segments.append(segmented_points)
@@ -304,7 +288,7 @@ def segment_points_by_old_num(dict_of_points: dict[str, list[QgsFeature]], field
 def create_new_names(base_dict: dict[int, str], list_of_segments: list[PointsSegment]) -> dict[int, str]:
     """
     For each segment, update dict  for storing new names.
-    :param base_dict:
+    :param base_dict: dictionary mapping FID with new name, waiting for update
     :param list_of_segments:
     :return:
     """
@@ -315,8 +299,28 @@ def create_new_names(base_dict: dict[int, str], list_of_segments: list[PointsSeg
     return base_dict
 
 
+def assign_new_names(point_layer: QgsVectorLayer, fids_with_new_names: dict[int, str], new_name_field: str):
+    """
+    Assign new names by FID into a specified field, using PyQGIS .dataProvider().
+    :param point_layer:
+    :param fids_with_new_names:
+    :param new_name_field:
+    :return:
+    """
+    assert new_name_field in [f.name() for f in point_layer.fields()], f'No field named "{new_name_field}" in layer'
+
+    field_index = point_layer.fields().indexOf(new_name_field)
+    change_dict = {fid: {field_index: new_name} for fid, new_name in fids_with_new_names.items()}
+    point_layer.dataProvider().changeAttributeValues(change_dict)
+
+
 # ============================================================================================================ MAIN ===
-def main():
+def solve_recruitment_task():
+    """
+    Assign new names to points while meeting specific conditions.
+    :return:
+    """
+
     """
     In order to preserve original spatial data, the script creates a copy to work on
     """
@@ -326,10 +330,6 @@ def main():
     The new_names dict is a temporary dictionary that stores all new names for points before assigning them into file.
     When it is created it contains only values from old field, or else, string 'NULL'. The 'NULL' string will be later
     replaced if the point is located on the watercourse, leaving the ones that don`t intersect with default 'NULL'.
-    
-    !!!
-    I decided to make 'NULL' a string value because that was specified in the task description, it was described as
-    value and followed styling convention of other strings. Otherwise I would just leave it with no values.
     """
     points = open_spatial_layer(sett.RESULTS_FILENAME, sett.POINT_LAYER_NAME)
     new_names_dict = prepare_new_values_dict(points, sett.POINT_OLD_NAME_FIELD)  # FID: new_name
@@ -338,7 +338,7 @@ def main():
     Watercourses are opened and merged into single lines by unique name in field sett.LINE_IDENTIFICATION_FIELD.
     """
     lines = open_spatial_layer(sett.RESULTS_FILENAME, sett.LINE_LAYER_NAME)
-    lines_by_name = merge_lines_by_field_value(lines, sett.LINE_IDENTIFICATION_FIELD)  # water_name: QgsGeometry_obj
+    lines_by_name = merge_lines_by_field_value(lines, sett.LINE_IDENTIFICATION_FIELD)  # line_name: QgsGeometry_obj
 
     """
     Each watercourse gets a list of points it is intersecting with.
@@ -348,16 +348,15 @@ def main():
     The intersection is realised by checking the distance between line and point, with 1e-6 threshold.
     QgsGeometry.intersects() method gives unrealistic results due to float point rounding error.
     """
-
-    sorted_points = points_by_watercourse(points, lines_by_name)
+    sorted_points = points_by_watercourse(points, lines_by_name)  # line_name: list_of_points_sorted_by_distance
     segmented_points = segment_points_by_old_num(sorted_points, sett.POINT_OLD_NAME_FIELD)
 
     """
-    New names are being created.
+    New names are being created. Then, the points layer is being updated and saved.
     """
     new_names_dict = create_new_names(new_names_dict, segmented_points)
-
+    assign_new_names(points, new_names_dict, sett.POINT_NEW_NAME_FIELD)
 
 
 if __name__ == '__main__':
-    main()
+    solve_recruitment_task()
